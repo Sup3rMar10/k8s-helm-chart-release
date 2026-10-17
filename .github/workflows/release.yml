@@ -1,0 +1,65 @@
+name: release
+
+# Push a tag like v0.1.0 to publish the chart as an OCI artifact on GHCR.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      chart_ref: ${{ steps.meta.outputs.chart_ref }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+
+      - name: The tag must match Chart.yaml
+        id: meta
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          chart="$(sed -n 's/^version: *//p' charts/webapp/Chart.yaml)"
+          if [ "$tag" != "$chart" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Chart.yaml version $chart" >&2
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "chart_ref=oci://ghcr.io/${owner}/charts/webapp" >> "$GITHUB_OUTPUT"
+
+      - run: helm lint --strict charts/webapp
+      - run: helm package charts/webapp --destination dist
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Push the chart
+        run: helm push "dist/webapp-${{ steps.meta.outputs.version }}.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+
+  verify:
+    # Install the PUBLISHED artifact, not the source tree: proves what users will actually get.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: verify
+          wait: 120s
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Show the published chart
+        run: helm show chart "${{ needs.publish.outputs.chart_ref }}" --version "${{ needs.publish.outputs.version }}"
+      - name: Install, upgrade, test and roll back the published chart
+        run: scripts/upgrade-test.sh "${{ needs.publish.outputs.chart_ref }}" "${{ needs.publish.outputs.version }}"

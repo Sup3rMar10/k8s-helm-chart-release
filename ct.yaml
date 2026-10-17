@@ -1,0 +1,7 @@
+# chart-testing (ct) configuration.
+chart-dirs:
+  - charts
+# This repo has no maintainers listed, and no previous release to compare versions with yet.
+validate-maintainers: false
+check-version-increment: false
+helm-extra-args: --timeout 180s

@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+
+      - name: helm lint (strict) for the defaults and every ci/ values file
+        run: |
+          helm lint --strict charts/webapp
+          for f in charts/webapp/ci/*.yaml; do
+            echo "--- $f"
+            helm lint --strict charts/webapp -f "$f"
+          done
+
+      - name: Render and validate against the Kubernetes schemas (kubeconform)
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          for f in charts/webapp/ci/*.yaml; do
+            echo "--- $f"
+            helm template demo charts/webapp -f "$f" | ./kubeconform -strict -summary -kubernetes-version 1.33.0
+          done
+
+      - name: values.schema.json rejects bad values
+        run: scripts/schema-tests.sh
+
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
+  install:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@v5
+      - uses: helm/chart-testing-action@v2
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: chart-test
+          wait: 120s
+      - name: Lint with chart-testing
+        run: ct lint --config ct.yaml --charts charts/webapp
+      - name: Install every ci/ values file and run helm test
+        run: ct install --config ct.yaml --charts charts/webapp
+
+  upgrade:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: upgrade-test
+          wait: 120s
+      - name: Install, upgrade, helm test, roll back
+        run: scripts/upgrade-test.sh
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get all,cm,events -A -o wide || true
+          kubectl describe pods || true

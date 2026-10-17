@@ -1,0 +1,4 @@
+replicaCount: 1
+message: "a different message"
+podDisruptionBudget:
+  enabled: false

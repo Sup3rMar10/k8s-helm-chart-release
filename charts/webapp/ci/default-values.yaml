@@ -1,0 +1,2 @@
+# chart-testing installs the chart once per file in ci/.
+replicaCount: 2
